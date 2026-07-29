@@ -1,8 +1,8 @@
-# MarginPilot — v1 (quantitative engine only)
+# MarginPilot — v2 (quantitative engine + product layer)
 
-This is Phase 1 from the architecture plan: the deterministic pricing
-engine, with **no LLM/agent layer yet**. Data → demand model → elasticity →
-optimizer → business rules → recommendation, nothing else.
+Phase 1 (the deterministic pricing engine) plus Phase 2 (FastAPI + Streamlit
+product layer, on top of the same engine). **Still no LLM/agent layer** —
+that's Phase 3.
 
 ```
 data/generate_synthetic_data.py   synthetic weekly retail panel + known ground truth
@@ -13,59 +13,60 @@ src/constraints.py                PricingConstraints + feasibility check
 src/optimize.py                   grid-search optimizer under constraints
 src/backtest.py                   two validation layers (see below)
 src/explain.py                    analyst/executive text from already-computed numbers
-run_pipeline.py                   ties it all together, prints + saves a report
+run_pipeline.py                   Phase 1 entry point: batch report over all products
+api/main.py                       FastAPI: /products, /simulate, /recommend, /recommendations/history
+api/schemas.py                    request/response models (RecommendRequest = the PricingRequest shape)
+api/traceability.py               JSONL log: every recommendation, auditable by design
+dashboard/app.py                  Streamlit: product view, optimize, scenario comparison, trace log
+dashboard/theme.py                dark theme + card components (same convention as FlightRisk/EvidenceRoute)
 tests/test_elasticity_recovery.py sanity check: fails loudly if estimation breaks
+tests/test_api.py                 API tests via FastAPI's TestClient
+tests/test_dashboard.py           dashboard tests via Streamlit's AppTest (executes app.py for real)
 ```
 
-Run it:
+Run the Phase 1 batch report:
 
 ```bash
 pip install -r requirements.txt
 python3 run_pipeline.py
-python3 -m pytest tests/ -v
 ```
 
-## Why synthetic data, and where real data would come from
+Run the product layer (two processes, same engine):
 
-No real, proprietary retailer price/demand history is publicly available —
-that's commercially sensitive data companies don't release. There are two
-honest options, and this project uses the first as the foundation and
-leaves the second as the next step:
+```bash
+uvicorn api.main:app --reload --port 8000     # terminal 1
+streamlit run dashboard/app.py                 # terminal 2
+```
 
-**1. Synthetic data with known ground truth (what's implemented here).**
-`generate_synthetic_data.py` creates products with a *known* true elasticity,
-cost, and demand curve, then generates weekly price/quantity history from it
-— including periodic repricing events, because without price variation
-there's nothing to estimate elasticity from. This makes it possible to check
-whether the estimator actually recovers the right number
-(`validate_against_ground_truth`, step 3 of the pipeline) instead of just
-producing *a* number and hoping it's sane.
+Run everything:
 
-**2. A real dataset, to layer on top once the engine is trusted.** The two
-candidates that actually fit this problem (real price *variation* over time,
-not just one snapshot): **Dominick's Finer Foods** (Kilts Center, Chicago
-Booth) and Kaggle's **"Retail Price Optimization"** dataset. Datasets to
-explicitly avoid: Instacart (no price column), Rossmann/Walmart Recruiting
-(mostly promo flags, too little continuous price variation).
+```bash
+python3 -m pytest tests/ -v   # test_dashboard.py auto-skips if the API isn't up
+```
 
-To plug a real dataset in, map it to the same schema `panel_df` already
-uses: `product_id, category, week, date, price, cost, promo_flag,
-quantity_sold`.
+## What Phase 2 adds
 
-## Validation, kept deliberately in two parts
-
-- `validate_against_ground_truth` only works on synthetic data — it
-  validates the *method*.
-- `temporal_backtest` (train on early weeks, test on later weeks) works on
-  either — it validates *generalization*, and is the one that carries over
-  to real data.
+- **API** (`api/main.py`): fits every model once at startup, then serves
+  `/products`, `/products/{id}/elasticity`, `/simulate`, `/recommend`. The
+  `RecommendRequest` schema is exactly the `PricingRequest` shape from the
+  architecture doc — Phase 3's copilot fills the same fields from natural
+  language later, the endpoint doesn't change.
+- **Traceability** (`api/traceability.py`): every `/recommend` call is
+  appended to `outputs/traceability_log.jsonl` — what was asked, what came
+  back, when.
+- **Dashboard** (`dashboard/app.py`): a real client of the API (calls it
+  over HTTP, doesn't import the engine directly) — product view, elasticity,
+  an Optimize button, a scenario-comparison table, and the trace log. Dark
+  theme, styled cards instead of raw JSON — same convention as
+  FlightRisk/EvidenceRoute.
+- Both the API (`tests/test_api.py`) and the dashboard
+  (`tests/test_dashboard.py`, via Streamlit's `AppTest`) are tested without
+  needing a browser.
 
 ## What's deliberately not here yet
 
-Phase 2 (FastAPI + dashboard), Phase 3 (LangChain copilot), Phase 4
-(governance). `explain.py` exists only as plain string formatting over
-numbers already computed elsewhere.
-
-The optimizer also doesn't hide infeasible cases: if no price in the tested
-range satisfies the constraints for a product, it's reported by name in the
-pipeline output, not silently dropped.
+Phase 3 (LangChain copilot) and Phase 4 (governance). The optimizer still
+doesn't hide infeasible cases: if no price in the tested range satisfies
+the constraints for a product, `run_pipeline.py` names it in the batch
+report and `/recommend` returns a 422 with the reason, rather than
+silently dropping or approximating it.
