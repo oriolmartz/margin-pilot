@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+data/panel.csv
+data/ground_truth.csv
+outputs/*.csv
