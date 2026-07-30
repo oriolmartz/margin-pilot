@@ -20,6 +20,8 @@ Single entry point: handle_message(text) -> dict with at least
 
 from __future__ import annotations
 
+from governance.scope_check import check_scope
+
 from .fallback_parser import parse as fallback_parse
 from .llm import get_llm
 from .tools import ALL_TOOLS, ask_pricing_data, get_product_elasticity, recommend_price
@@ -154,6 +156,14 @@ def _handle_online(text: str, llm) -> dict:
 
 
 def handle_message(text: str) -> dict:
+    scope = check_scope(text)
+    if not scope.in_scope:
+        return {
+            "mode": "offline",
+            "intent": "out_of_scope",
+            "answer": f"No puedo ayudar con eso ({scope.reason}): {scope.detail}.",
+            "raw": {"scope": scope.__dict__},
+        }
     llm = get_llm()
     if llm is not None:
         return _handle_online(text, llm)

@@ -118,8 +118,18 @@ def test_agent_data_question():
 
 
 def test_agent_unrecognized_message_is_honest_about_it():
-    r = handle_message("¿qué tiempo hace hoy?")
+    r = handle_message("¿Cuál es la política de descuento?")
     assert r["intent"] == "unrecognized"
+
+
+def test_agent_rejects_out_of_scope_message():
+    r = handle_message("¿qué tiempo hace hoy?")
+    assert r["intent"] == "out_of_scope"
+
+
+def test_agent_rejects_disallowed_database_write_request():
+    r = handle_message("Por favor haz un UPDATE en la tabla panel para bajar todos los precios")
+    assert r["intent"] == "out_of_scope"
 
 
 # --- /copilot/ask endpoint ---

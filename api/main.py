@@ -12,6 +12,7 @@ Run with:  uvicorn api.main:app --reload --port 8000   (from the project root)
 from __future__ import annotations
 
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -22,6 +23,8 @@ from api.schemas import (
     CopilotRequest,
     CopilotResponse,
     ElasticityResponse,
+    GovernanceApproveRequest,
+    GovernanceRecommendRequest,
     ProductSummary,
     RecommendRequest,
     RecommendResponse,
@@ -30,6 +33,7 @@ from api.schemas import (
 )
 from api.traceability import log_recommendation, read_recent
 from copilot.agent import handle_message
+from governance import approval_graph, audit
 from src.constraints import PricingConstraints
 from src.elasticity import summarize
 from src.engine_state import get_state
@@ -147,3 +151,24 @@ def recommendation_history(limit: int = 20):
 def copilot_ask(req: CopilotRequest):
     result = handle_message(req.message)
     return CopilotResponse(mode=result["mode"], intent=result["intent"], answer=result["answer"])
+
+
+@app.post("/governance/recommend")
+def governance_recommend(req: GovernanceRecommendRequest):
+    thread_id = str(uuid.uuid4())
+    return {"thread_id": thread_id, **approval_graph.start(thread_id, req.message)}
+
+
+@app.post("/governance/approve")
+def governance_approve(req: GovernanceApproveRequest):
+    return {"thread_id": req.thread_id, **approval_graph.resume(req.thread_id, req.approved, req.approved_by)}
+
+
+@app.get("/governance/pending")
+def governance_pending():
+    return audit.read_pending()
+
+
+@app.get("/governance/audit")
+def governance_audit(limit: int = 20):
+    return audit.read_recent(limit)

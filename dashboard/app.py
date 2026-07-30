@@ -159,6 +159,67 @@ else:
     st.caption("No recommendations logged yet — run one above.")
 
 st.divider()
+st.subheader("Governance — approval workflow")
+st.caption(
+    "Runs through a LangGraph state machine: >10% price change or a policy conflict pauses "
+    "for human approval (persisted in SQLite — survives an API restart), anything else "
+    "completes immediately. This is separate from the copilot chat above."
+)
+
+gov_col1, gov_col2 = st.columns([2, 1])
+with gov_col1:
+    gov_message = st.text_area(
+        "Request a recommendation through the approval workflow",
+        value="",
+        placeholder="Recomiéndame el precio de PREM-025 para maximizar volumen, margen mínimo 20%.",
+        height=80,
+        key="gov_message",
+    )
+with gov_col2:
+    st.write("")
+    st.write("")
+    if st.button("Submit for review"):
+        resp = requests.post(f"{API_BASE}/governance/recommend", json={"message": gov_message}, timeout=30)
+        resp.raise_for_status()
+        st.session_state["gov_last_result"] = resp.json()
+
+if "gov_last_result" in st.session_state:
+    result = st.session_state["gov_last_result"]
+    if result["status"] == "completed":
+        st.success(result["answer"])
+    else:
+        st.warning(f"Pending approval — {result['reason']}")
+        st.json(result["recommendation"], expanded=False)
+
+st.markdown("**Pending approvals**")
+pending = requests.get(f"{API_BASE}/governance/pending", timeout=5).json()
+if not pending:
+    st.caption("Nothing pending.")
+else:
+    for row in pending:
+        with st.container(border=True):
+            st.write(f"`{row['thread_id'][:8]}` — {row['product_id']} · {row['approval_reason']}")
+            a1, a2, a3 = st.columns([2, 1, 1])
+            with a1:
+                approver = st.text_input("Approver name", key=f"approver_{row['thread_id']}", label_visibility="collapsed", placeholder="Approver name")
+            with a2:
+                if st.button("Approve", key=f"approve_{row['thread_id']}"):
+                    requests.post(
+                        f"{API_BASE}/governance/approve",
+                        json={"thread_id": row["thread_id"], "approved": True, "approved_by": approver or "unknown"},
+                        timeout=30,
+                    )
+                    st.rerun()
+            with a3:
+                if st.button("Reject", key=f"reject_{row['thread_id']}"):
+                    requests.post(
+                        f"{API_BASE}/governance/approve",
+                        json={"thread_id": row["thread_id"], "approved": False, "approved_by": approver or "unknown"},
+                        timeout=30,
+                    )
+                    st.rerun()
+
+st.divider()
 st.subheader("Copilot")
 st.caption(
     "Natural-language front end over the same engine (Phase 3). Runs a real Claude agent "

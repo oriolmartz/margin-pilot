@@ -78,3 +78,13 @@ class CopilotResponse(BaseModel):
     mode: str  # "online" (real LLM) | "offline" (rule-based fallback)
     intent: str
     answer: str
+
+
+class GovernanceRecommendRequest(BaseModel):
+    message: str
+
+
+class GovernanceApproveRequest(BaseModel):
+    thread_id: str
+    approved: bool
+    approved_by: str
