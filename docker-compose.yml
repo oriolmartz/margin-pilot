@@ -1,0 +1,27 @@
+services:
+  api:
+    build: .
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - marginpilot-data:/app/data
+      - marginpilot-outputs:/app/outputs
+    environment:
+      # Set this to use a real Claude agent instead of the offline
+      # rule-based fallback -- see ARCHITECTURE.md.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+  dashboard:
+    build: .
+    command: streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port 8501
+    ports:
+      - "8501:8501"
+    environment:
+      - MARGINPILOT_API=http://api:8000
+    depends_on:
+      - api
+
+volumes:
+  marginpilot-data:
+  marginpilot-outputs:

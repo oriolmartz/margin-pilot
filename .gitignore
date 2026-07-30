@@ -3,4 +3,10 @@ __pycache__/
 .pytest_cache/
 data/panel.csv
 data/ground_truth.csv
+data/marginpilot.db
+data/audit.db
+data/checkpoints.db
+data/*.db-shm
+data/*.db-wal
 outputs/*.csv
+outputs/*.jsonl

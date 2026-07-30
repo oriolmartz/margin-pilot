@@ -1,0 +1,31 @@
+# Render Blueprint (Infrastructure-as-Code) -- deploys both services from
+# this one repo. See DEPLOYMENT.md for the honest caveats: this file
+# could not be test-deployed from the environment this project was built
+# in (no Docker, no Render account available there), so treat it as a
+# solid starting point to verify against Render's current Blueprint
+# reference (https://render.com/docs/infrastructure-as-code), not a
+# guarantee.
+
+services:
+  - type: web
+    name: marginpilot-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false # set manually in the Render dashboard -- optional, enables the real LLM path
+
+  - type: web
+    name: marginpilot-dashboard
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: streamlit run dashboard/app.py --server.address 0.0.0.0 --server.port $PORT
+    plan: free
+    envVars:
+      - key: MARGINPILOT_API
+        fromService:
+          name: marginpilot-api
+          type: web
+          property: hostport
