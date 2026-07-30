@@ -1,41 +1,61 @@
 # MarginPilot
 
-**An AI-assisted pricing and margin optimization platform.** Given a
-product and a set of business constraints, it estimates how price-sensitive
-demand actually is, recommends the price that maximizes profit (or revenue,
-or volume) without breaking those constraints, and routes anything risky —
-a large price change, a violation of company policy — to a human for
-approval before it goes anywhere.
+**An AI-assisted pricing and margin optimisation platform.** Given a
+product and a set of commercial constraints, it estimates demand
+elasticity, evaluates executable price points, recommends the option that
+best serves profit, revenue or volume, and routes risky decisions to human
+approval.
 
-The core design decision, and the one thing worth reading if you read
-nothing else: **the LLM never sets a price.** It parses intent, calls
-deterministic tools, and explains results the pricing engine already
-computed. Every number in every answer traces back to a specific function
-call, never to the model's own arithmetic — this is checked automatically,
-not just asserted (see `governance/consistency_check.py`).
+The central design rule is simple: **the LLM never sets or approves a
+price.** Natural language is converted into structured constraints, while a
+shared deterministic service performs the simulation, optimisation, policy
+evaluation and approval assessment. The API, LangChain copilot and
+LangGraph workflow all use that same service.
 
 ## What it demonstrates
 
-| Layer | What's actually being shown |
+| Layer | What's actually implemented |
 |---|---|
-| Demand modeling | Log-log elasticity estimation (statsmodels OLS), validated against known ground truth on synthetic data before ever trusting it |
-| Decision-making | Constrained optimization (grid search, chosen over a black-box solver specifically so every candidate price is auditable) |
-| Agentic AI | LangChain tool-calling (`create_agent`) over deterministic functions, with a fully-tested rule-based fallback for offline development |
-| Retrieval | TF-IDF policy RAG that produces a *numeric* conflict check, not a paraphrase |
-| Human-in-the-loop | A real LangGraph state machine — `interrupt()` / `Command(resume=...)` — with a persistent SQLite checkpointer; a paused approval survives a full process restart (tested by literally killing and resuming from a separate process) |
-| Engineering discipline | 49 automated tests across every layer, a scored eval harness, an audit trail, and a README that says what's *not* tested (the live-LLM path — no API key in the build environment) rather than implying everything was |
+| Demand modelling | Log-log elasticity estimation with statsmodels OLS, validated against known synthetic ground truth and with a temporal backtest |
+| Decision intelligence | Auditable constrained search over executable `.49` / `.99` prices for profit, revenue or volume objectives |
+| Correct scenario comparison | Volume impact is measured against modelled demand at the current price under the **same week and promotion context**, not against a noisy historical sale |
+| Agentic AI | LangChain tool-calling over deterministic functions, plus a tested rule-based fallback when no model key is configured |
+| Policy enforcement | TF-IDF policy retrieval for provenance plus deterministic checks for category margin floors, premium-price protection, commercial rounding and phased large increases |
+| Human-in-the-loop | LangGraph `interrupt()` / `Command(resume=...)` with a persistent SQLite checkpointer and audit trail |
+| Guardrails | Scope filtering, Pydantic validation and a numeric consistency guard that blocks online prose containing values not returned by a tool |
+| Engineering discipline | **47 automated tests** across the engine, API, dashboard, copilot and governance layers, plus a labelled routing eval harness |
 
-This maps directly onto **AI Solutions Engineering / Forward-Deployed AI
-Engineering** work: wrapping a real decision system with an LLM interface
-that a non-technical user can operate, without letting the LLM anywhere
-near the actual decision.
+This maps directly onto **AI Solutions Engineering, Forward-Deployed AI
+Engineering and decision-intelligence product work**: a business-facing AI
+interface wrapped around a controlled numerical system rather than an LLM
+being treated as the decision engine.
+
+## Decision path
+
+```text
+Natural language or structured request
+        ↓
+Validated pricing constraints
+        ↓
+Shared deterministic decision service
+        ├─ demand prediction
+        ├─ context-matched volume baseline
+        ├─ constrained executable-price search
+        └─ machine-readable policy evaluation
+        ↓
+Shared approval rules
+        ├─ auto-approved
+        └─ LangGraph interrupt → human decision → audit log
+        ↓
+Deterministic or numerically checked explanation
+```
 
 ## Try it
 
 ```bash
 pip install -r requirements.txt
 uvicorn api.main:app --reload --port 8000     # terminal 1
-streamlit run dashboard/app.py                 # terminal 2
+streamlit run dashboard/app.py                # terminal 2
 ```
 
 Or with Docker:
@@ -44,31 +64,50 @@ Or with Docker:
 docker compose up --build
 ```
 
-Then open the dashboard, pick a product, and either click **Optimize**
-directly or type something like:
+Then try:
 
 > Recomiéndame el precio de PREM-025 para maximizar volumen, sin perder
 > más de un 30% de volumen y manteniendo un margen mínimo del 20%.
 
-into the copilot box — it will come back with a price recommendation
-*and* flag that it breaks the category's real minimum-margin policy, even
-though it satisfies the margin you asked for.
+The optimizer can satisfy the requested 20% margin, but the shared policy
+layer still detects the 35% premium-category floor and the 5% premium-cut
+limit. The recommendation therefore enters the same persisted approval
+workflow whether it came from the dashboard, `/recommend` or the copilot.
 
-## What's real and what's synthetic, plainly
+## Validation
 
-The demand data is synthetic, generated with a *known* ground-truth
-elasticity per product specifically so the estimation method can be
-validated against the true answer — something no real dataset lets you do.
-`ARCHITECTURE.md` names the two real datasets (Dominick's Finer Foods;
-Kaggle's Retail Price Optimization set) that would replace it, and the
-schema is fixed so that swap doesn't touch anything downstream. The
-LLM-backed copilot path is implemented against the current LangChain/
-LangGraph API and covered by the same test suite in its rule-based fallback
-form; the live-model path needs an Anthropic API key this build environment
-didn't have, so it hasn't been run end to end — that's stated once, here,
-instead of buried.
+The current synthetic run contains 30 products and 4,680 weekly
+observations. Synthetic data is used deliberately because every product has
+a known true elasticity, allowing the estimator to be checked against the
+answer rather than merely producing a plausible coefficient.
+
+Typical seeded run:
+
+- mean absolute elasticity error: approximately **0.06**;
+- true elasticity inside the estimated 95% interval for approximately **93%** of products;
+- median temporal holdout MAPE: approximately **6.4%**.
+
+The synthetic generator and estimator share a log-log functional form, so
+this validates implementation and parameter recovery under controlled
+conditions. It does **not** claim causal price identification under real
+endogeneity, stockouts, competitor actions, cannibalisation or strategic
+promotion assignment.
+
+## Honest limitations
+
+- The current decision model is national-level; regional exceptions remain
+  a documented manual-review flag because the panel has no region field.
+- Promotion cadence is documented but not machine-enforced because the
+  current recommendation is a list-price decision and has no campaign
+  calendar.
+- The live Claude path is implemented, but requires an
+  `ANTHROPIC_API_KEY`; the deterministic fallback is what can be exercised
+  without external credentials.
+- A production version would replace synthetic data, add causal or
+  quasi-experimental identification, propagate elasticity uncertainty into
+  robust recommendations, and use a production-grade persistence layer.
 
 ## More detail
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — phase-by-phase engineering log: what each layer adds, what was deliberately left out, and why
-- [`DEPLOYMENT.md`](DEPLOYMENT.md) — how to actually put this somewhere with a URL
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — engineering design and decision boundaries
+- [`DEPLOYMENT.md`](DEPLOYMENT.md) — local, Docker and hosted deployment

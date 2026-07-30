@@ -4,7 +4,7 @@ This is the phase-by-phase engineering log: what each phase adds, what
 was deliberately left out, and why. For the two-minute version — what
 this is and what it demonstrates — see [README.md](README.md).
 
-All four phases from the original plan: Phase 1 (deterministic pricing
+All four phases from the original plan, plus a shared decision-integrity layer: Phase 1 (deterministic pricing
 engine), Phase 2 (FastAPI + Streamlit product layer), Phase 3 (LangChain
 copilot: tool-calling, policy RAG, guarded SQL), Phase 4 (LangGraph
 human-approval workflow, a real audit table, scope/consistency checks,
@@ -14,30 +14,33 @@ an eval harness).
 data/generate_synthetic_data.py   synthetic weekly retail panel + known ground truth
 src/demand_model.py               log-log OLS demand curve per product
 src/elasticity.py                 elasticity summary/classification
-src/simulate.py                   "what happens at price X" (no optimization)
+src/simulate.py                   context-matched price simulation (no optimization)
 src/constraints.py                PricingConstraints + feasibility check
-src/optimize.py                   grid-search optimizer under constraints
+src/optimize.py                   auditable executable-price search under constraints
 src/backtest.py                   two validation layers (see below)
 src/explain.py                    analyst/executive text from already-computed numbers
-src/engine_state.py               fits every model once, shared by the API, copilot, and governance graph
+src/engine_state.py               fits every model once, shared by all recommendation channels
 run_pipeline.py                   Phase 1 entry point: batch report over all products
-api/main.py                       FastAPI: /products, /simulate, /recommend, /copilot/ask, /governance/*
+services/pricing.py               single decision service used by API, copilot and governance
+api/main.py                       FastAPI: all recommendation paths are approval-aware
 api/schemas.py                    request/response models (RecommendRequest = the PricingRequest shape)
 api/traceability.py               JSONL log for the plain /recommend endpoint
 copilot/llm.py                    real ChatAnthropic if ANTHROPIC_API_KEY is set, else None
 copilot/tools.py                  @tool-wrapped engine functions an agent (or the offline router) can call
 copilot/fallback_parser.py        regex NL parser used ONLY when no LLM is configured
-copilot/policy_rag.py             TF-IDF retrieval over copilot/policies/*.md + numeric conflict check
+copilot/policy_rag.py             TF-IDF provenance + deterministic policy evaluation
 copilot/sql_tool.py               read-only SQL (guarded 3 ways) + canned NL fallback
 copilot/agent.py                  handle_message(): scope check -> real create_agent() or the offline router
 governance/scope_check.py         rejects unrelated or explicitly-disallowed messages before any tool runs
-governance/consistency_check.py   flags numbers in an answer that don't trace back to a tool result
+governance/consistency_check.py   blocks online numbers that do not trace to tool output
 governance/evals.py               scored report over a small labeled intent-routing set
 governance/audit.py               real SQLite audit table for the approval-gated path
-governance/approval_graph.py      LangGraph: parse -> recommend -> check -> (interrupt if needed) -> finalize
+governance/approval_rules.py      shared approval assessment for every recommendation channel
+governance/approval_graph.py      persistent LangGraph interrupt/resume workflow
 dashboard/app.py                  Streamlit: product view, optimize, scenario comparison, copilot chat, approvals panel
 dashboard/theme.py                dark theme + card components (same convention as FlightRisk/EvidenceRoute)
 tests/test_elasticity_recovery.py sanity check: fails loudly if estimation breaks
+tests/test_pricing_engine.py      baseline, rounding and policy regression tests
 tests/test_api.py                 API tests via FastAPI's TestClient
 tests/test_dashboard.py           dashboard tests via Streamlit's AppTest (executes app.py for real)
 tests/test_copilot.py             parser + policy RAG + SQL guardrails + offline agent routing
@@ -79,6 +82,27 @@ tests should never depend on whether a dev server happens to be running
 anyway, so this is fixed regardless of that specific quirk. If you ever
 run multiple API workers against the same `data/checkpoints.db` in
 production, give each its own checkpoint file for the same reason.
+
+
+## Decision integrity corrections
+
+The recommendation layer deliberately avoids comparing a future candidate
+against the last observed sale. A historical quantity can belong to a
+different week, promotion state and noise realisation, which can report a
+non-zero volume change even when price is unchanged. MarginPilot now predicts
+both candidate and baseline demand under the same context:
+
+```text
+Q(candidate price | same week, same promo)
+------------------------------------------ - 1
+Q(current price   | same week, same promo)
+```
+
+All channels call `services/pricing.py`, which also applies executable `.49` /
+`.99` price endings, evaluates the machine-readable policies and returns a
+single `requires_approval` decision. `/recommend`, the offline/online copilot
+and the explicit governance endpoint cannot silently apply separate approval
+rules.
 
 
 ## Why synthetic data, and where real data would come from
