@@ -41,7 +41,7 @@ Elasticity is normally negative because demand usually falls when price rises.
 - $\varepsilon=-1.4$: a 1% price increase is associated with approximately a 1.4% fall in demand. Demand is relatively **elastic**.
 - $|\varepsilon|\approx1$: price and quantity change by similar percentages.
 
-This matters because the same price increase can improve profit for an inelastic product and damage it for a highly elastic one.
+This matters because the same price increase can improve contribution for an inelastic product and reduce it for a highly elastic one.
 
 ### 2. Estimating the demand curve
 
@@ -109,12 +109,10 @@ Whether €10.99 is acceptable therefore depends on the selected objective and c
 Volume change is not measured against the last observed sale, because that sale may come from a different season or promotion. Both quantities are predicted under the same decision context:
 
 $$
-\Delta Q\%=\frac{
-\widehat{Q}(P_{candidate},t,promo)-\widehat{Q}(P_{current},t,promo)
-}{
-\widehat{Q}(P_{current},t,promo)
-}
+\Delta_Q = \frac{\hat Q(P_c,t,s)-\hat Q(P_0,t,s)}{\hat Q(P_0,t,s)}
 $$
+
+where $P_c$ is the candidate price, $P_0$ is the current reference price, and both predictions use the same week $t$ and promotion state $s$. The engine stores $\Delta_Q$ as a decimal ratio, while the API and dashboard format it as a percentage.
 
 This guarantees that testing the current price against itself produces a 0% volume change. The comparison isolates the price effect instead of mixing it with unrelated weekly or promotional differences.
 
@@ -123,37 +121,43 @@ This guarantees that testing the current price against itself produces a 0% volu
 MarginPilot evaluates a transparent set of executable candidate prices rather than relying on an opaque recommendation:
 
 $$
-P^*=\underset{P\in\mathcal{P}}{\operatorname{argmax}}\;F(P)
+F(P^*) = \max_{P\in\mathcal{P}_f} F(P)
 $$
+
+Here, $\mathcal{P}_f$ is the set of candidate prices that satisfy all constraints, and $P^*$ is the selected price.
 
 The objective $F(P)$ can be:
 
 $$
-Profit(P)=(P-C)\widehat{Q}(P)
+CM(P)=(P-C)\hat Q(P)
+$$
+
+where $CM(P)$ is expected contribution margin. The API calls this objective `profit`, but fixed costs are not modelled, so contribution is the mathematically precise term.
+
+$$
+R(P)=P\hat Q(P)
+$$
+
+where $R(P)$ is expected revenue, or simply:
+
+$$
+V(P)=\hat Q(P)
+$$
+
+where $V(P)$ is predicted sales volume.
+
+The selected objective is maximised subject to constraints such as:
+
+$$
+\frac{P-C}{P}\ge m_{\min}
 $$
 
 $$
-Revenue(P)=P\widehat{Q}(P)
-$$
-
-or simply:
-
-$$
-Volume(P)=\widehat{Q}(P)
-$$
-
-subject to constraints such as:
-
-$$
-\frac{P-C}{P}\ge m_{min}
+\Delta_Q\ge -L_{\max}
 $$
 
 $$
-\Delta Q\%\ge -L_{max}
-$$
-
-$$
-P_{floor}\le P\le P_{ceiling}
+P_{\min}\le P\le P_{\max}
 $$
 
 Every candidate can therefore be inspected, accepted or rejected with a concrete reason. The final recommendation is already rounded to a commercially valid `.49` or `.99` price.
