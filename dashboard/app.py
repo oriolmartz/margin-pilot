@@ -9,6 +9,10 @@ Run (from the project root, with the API already running):
 """
 
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pandas as pd
 import requests
@@ -21,7 +25,7 @@ st.set_page_config(page_title="MarginPilot", layout="wide", page_icon="\U0001F4C
 st.markdown(CSS, unsafe_allow_html=True)
 
 st.title("MarginPilot")
-st.caption("Pricing & margin optimization — Phase 2 (product layer, no copilot yet)")
+st.caption("Pricing & margin optimization — engine + product layer + copilot")
 
 if "scenarios" not in st.session_state:
     st.session_state.scenarios = []
@@ -50,7 +54,7 @@ with st.sidebar:
     min_margin = st.slider("Min margin %", 0, 70, 30) / 100
     max_vol_loss = st.slider("Max volume loss %", 0, 30, 8) / 100
     scenario_label = st.text_input("Scenario label", value="baseline")
-    run = st.button("Optimize", type="primary", use_container_width=True)
+    run = st.button("Optimize", type="primary", width="stretch")
 
 product = next(p for p in products if p["product_id"] == pid)
 
@@ -133,7 +137,7 @@ if st.session_state.scenarios:
             "predicted_volume_change_pct",
         ]
     ]
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
     if st.button("Clear scenarios"):
         st.session_state.scenarios = []
         st.rerun()
@@ -150,6 +154,22 @@ if history:
         }
         for h in history
     ]
-    st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(hist_rows), width="stretch", hide_index=True)
 else:
     st.caption("No recommendations logged yet — run one above.")
+
+st.divider()
+st.subheader("Copilot")
+st.caption(
+    "Natural-language front end over the same engine (Phase 3). Runs a real Claude agent "
+    "if ANTHROPIC_API_KEY is set on the API process, otherwise a rule-based fallback that "
+    "only covers a few phrasings — it will say so."
+)
+example = "Recomiéndame el precio del producto SOFT-001 para maximizar margen, sin perder más de un 8% de volumen y manteniendo un margen mínimo del 30%."
+copilot_message = st.text_area("Ask the copilot", value="", placeholder=example, height=80)
+if st.button("Send"):
+    resp = requests.post(f"{API_BASE}/copilot/ask", json={"message": copilot_message or example}, timeout=30)
+    resp.raise_for_status()
+    body = resp.json()
+    st.caption(f"mode: {body['mode']} · intent: {body['intent']}")
+    st.markdown(body["answer"].replace("\n", "\n\n"))

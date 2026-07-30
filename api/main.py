@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from fastapi import FastAPI, HTTPException
 
 from api.schemas import (
+    CopilotRequest,
+    CopilotResponse,
     ElasticityResponse,
     ProductSummary,
     RecommendRequest,
@@ -27,19 +29,17 @@ from api.schemas import (
     SimulateResponse,
 )
 from api.traceability import log_recommendation, read_recent
-from data.generate_synthetic_data import generate
+from copilot.agent import handle_message
 from src.constraints import PricingConstraints
-from src.demand_model import fit_all
 from src.elasticity import summarize
+from src.engine_state import get_state
 from src.explain import explain_analyst, explain_executive
 from src.optimize import optimize_price
 from src.simulate import simulate_price
 
-app = FastAPI(title="MarginPilot API", version="0.2.0")
+app = FastAPI(title="MarginPilot API", version="0.3.0")
 
-_panel, _truth = generate()
-_models = fit_all(_panel)
-_latest = _panel.sort_values("week").groupby("product_id").tail(1)
+_panel, _truth, _models, _latest = get_state()
 
 
 def _latest_row(product_id: str):
@@ -141,3 +141,9 @@ def recommend(req: RecommendRequest):
 @app.get("/recommendations/history")
 def recommendation_history(limit: int = 20):
     return read_recent(limit)
+
+
+@app.post("/copilot/ask", response_model=CopilotResponse)
+def copilot_ask(req: CopilotRequest):
+    result = handle_message(req.message)
+    return CopilotResponse(mode=result["mode"], intent=result["intent"], answer=result["answer"])

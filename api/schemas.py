@@ -68,3 +68,13 @@ class RecommendResponse(BaseModel):
     feasible_candidates: int
     analyst_explanation: str
     executive_explanation: str
+
+
+class CopilotRequest(BaseModel):
+    message: str
+
+
+class CopilotResponse(BaseModel):
+    mode: str  # "online" (real LLM) | "offline" (rule-based fallback)
+    intent: str
+    answer: str
