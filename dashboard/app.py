@@ -102,6 +102,16 @@ if run:
         resp.raise_for_status()
         rec = resp.json()
         st.subheader("Recommendation")
+        if rec["requires_approval"]:
+            st.warning(
+                "Pending human approval: " + "; ".join(rec["approval_reasons"])
+            )
+        else:
+            st.success("Auto-approved by the shared governance rules.")
+        st.caption(
+            f"Volume baseline: model prediction at the current price, week "
+            f"{rec['decision_context_week']}, promo={rec['decision_context_promo']}"
+        )
         r1, r2, r3 = st.columns(3)
         with r1:
             st.markdown(
@@ -161,9 +171,9 @@ else:
 st.divider()
 st.subheader("Governance — approval workflow")
 st.caption(
-    "Runs through a LangGraph state machine: >10% price change or a policy conflict pauses "
-    "for human approval (persisted in SQLite — survives an API restart), anything else "
-    "completes immediately. This is separate from the copilot chat above."
+    "The direct optimizer, copilot and this review panel all use the same LangGraph "
+    "approval workflow. Risky recommendations pause in SQLite and can be resumed after "
+    "an API restart; safe recommendations are auto-approved."
 )
 
 gov_col1, gov_col2 = st.columns([2, 1])
@@ -232,5 +242,6 @@ if st.button("Send"):
     resp = requests.post(f"{API_BASE}/copilot/ask", json={"message": copilot_message or example}, timeout=30)
     resp.raise_for_status()
     body = resp.json()
-    st.caption(f"mode: {body['mode']} · intent: {body['intent']}")
+    status = f" · status: {body['status']}" if body.get("status") else ""
+    st.caption(f"mode: {body['mode']} · intent: {body['intent']}{status}")
     st.markdown(body["answer"].replace("\n", "\n\n"))

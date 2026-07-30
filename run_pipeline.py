@@ -61,10 +61,12 @@ def main():
     infeasible = []
     for pid, model in models.items():
         ref_price = float(latest.loc[pid, "price"])
-        ref_qty = float(latest.loc[pid, "quantity_sold"])
         cost = float(latest.loc[pid, "cost"])
 
-        opt = optimize_price(model, cost, ref_price, ref_qty, constraints)
+        opt = optimize_price(
+            model, cost, ref_price, constraints, reference_quantity=None,
+            week=int(latest.loc[pid, "week"]) + 1,
+        )
         if opt is None:
             infeasible.append(pid)  # surfaced below, never silently dropped
             continue

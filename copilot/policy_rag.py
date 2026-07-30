@@ -89,3 +89,87 @@ def check_margin_policy(category: str, predicted_margin_pct: float) -> dict:
             else f"predicted margin {predicted_margin_pct:.1%} satisfies the {min_required:.0%} policy floor"
         ),
     }
+
+
+def _has_allowed_price_ending(price: float) -> bool:
+    cents = int(round(price * 100)) % 100
+    return cents in {49, 99}
+
+
+def evaluate_pricing_policies(
+    category: str,
+    current_price: float,
+    recommended_price: float,
+    predicted_margin_pct: float,
+) -> dict:
+    """Evaluate all currently machine-enforceable pricing policies.
+
+    Retrieval remains useful for provenance and explanation, while the
+    numeric comparisons below are deterministic and shared by every channel.
+    Regional and promotion-cadence exceptions remain manual because the
+    current panel has no region or campaign calendar fields.
+    """
+    issues: list[dict] = []
+    margin = check_margin_policy(category, predicted_margin_pct)
+    if margin["conflict"]:
+        issues.append(
+            {
+                "code": "category_margin_floor",
+                "requires_approval": True,
+                "note": margin["note"],
+                "source": "margin_policy.md",
+            }
+        )
+
+    price_change_pct = (recommended_price - current_price) / current_price
+    if category == "premium_beverages" and price_change_pct < -0.05:
+        issues.append(
+            {
+                "code": "premium_price_protection",
+                "requires_approval": True,
+                "note": (
+                    f"premium price decrease {abs(price_change_pct):.1%} exceeds the 5% "
+                    "director-approval threshold"
+                ),
+                "source": "premium_protection.md",
+            }
+        )
+
+    if price_change_pct > 0.15:
+        issues.append(
+            {
+                "code": "phased_price_increase",
+                "requires_approval": True,
+                "note": (
+                    f"price increase {price_change_pct:.1%} exceeds 15% and must be phased "
+                    "over at least two pricing cycles"
+                ),
+                "source": "rounding_rules.md",
+            }
+        )
+
+    if not _has_allowed_price_ending(recommended_price):
+        issues.append(
+            {
+                "code": "invalid_price_ending",
+                "requires_approval": True,
+                "note": f"recommended price {recommended_price:.2f} does not end in .49 or .99",
+                "source": "rounding_rules.md",
+            }
+        )
+
+    approval_reasons = [issue["note"] for issue in issues if issue["requires_approval"]]
+    return {
+        "conflict": bool(issues),
+        "requires_approval": bool(approval_reasons),
+        "approval_reasons": approval_reasons,
+        "issues": issues,
+        "policy_min_margin_pct": margin.get("policy_min_margin_pct"),
+        "predicted_margin_pct": predicted_margin_pct,
+        "source_text": margin.get("source_text"),
+        "note": "; ".join(approval_reasons) if approval_reasons else margin["note"],
+        "manual_review_limitations": [
+            "regional exceptions are not evaluated because the panel has no region field",
+            "promotion cadence is not evaluated because recommendations are list-price decisions",
+        ],
+    }

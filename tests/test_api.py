@@ -54,6 +54,15 @@ def test_simulate_endpoint():
     assert r.status_code == 200
     body = r.json()
     assert body["predicted_quantity"] > 0
+    assert body["volume_baseline"] == "model_prediction_at_current_price_same_context"
+
+
+def test_simulating_current_price_reports_zero_volume_change():
+    pid = _first_product_id()
+    current_price = next(p for p in client.get("/products").json() if p["product_id"] == pid)["current_price"]
+    r = client.post("/simulate", json={"product_id": pid, "price": current_price})
+    assert r.status_code == 200
+    assert r.json()["volume_change_pct"] == 0.0
 
 
 def test_recommend_endpoint_and_traceability():
@@ -72,6 +81,9 @@ def test_recommend_endpoint_and_traceability():
     body = r.json()
     assert body["recommended_price"] > 0
     assert body["scenario_label"] == "test-scenario"
+    assert body["governance_status"] in {"auto_approved", "pending_approval"}
+    assert body["thread_id"]
+    assert int(round(body["recommended_price"] * 100)) % 100 in {49, 99}
 
     history = client.get("/recommendations/history?limit=1").json()
     assert len(history) == 1
@@ -84,4 +96,10 @@ def test_recommend_infeasible_constraints_returns_422():
         "/recommend",
         json={"product_id": pid, "min_margin_pct": 0.99, "max_volume_loss_pct": 0.0001},
     )
+    assert r.status_code == 422
+
+
+def test_recommend_rejects_invalid_percentage_range():
+    pid = _first_product_id()
+    r = client.post("/recommend", json={"product_id": pid, "min_margin_pct": 1.2})
     assert r.status_code == 422

@@ -1,7 +1,7 @@
 """
 api/main.py
 
-Exposes the Phase 1 engine over HTTP. Fits every demand model once at
+Exposes the governed pricing decision service over HTTP. Fits every demand model once at
 startup (fitting is cheap here, ~30 products, but the pattern -- fit once,
 serve many times -- is the one that matters once fitting gets expensive
 on real data).
@@ -34,14 +34,11 @@ from api.schemas import (
 from api.traceability import log_recommendation, read_recent
 from copilot.agent import handle_message
 from governance import approval_graph, audit
-from src.constraints import PricingConstraints
 from src.elasticity import summarize
 from src.engine_state import get_state
-from src.explain import explain_analyst, explain_executive
-from src.optimize import optimize_price
 from src.simulate import simulate_price
 
-app = FastAPI(title="MarginPilot API", version="0.3.0")
+app = FastAPI(title="MarginPilot API", version="0.4.0")
 
 _panel, _truth, _models, _latest = get_state()
 
@@ -94,8 +91,17 @@ def get_elasticity(product_id: str):
 @app.post("/simulate", response_model=SimulateResponse)
 def simulate(req: SimulateRequest):
     row = _latest_row(req.product_id)
-    ref_price, ref_qty, cost = float(row["price"]), float(row["quantity_sold"]), float(row["cost"])
-    sim = simulate_price(_models[req.product_id], cost, req.price, ref_price, ref_qty, promo=req.promo)
+    ref_price, cost = float(row["price"]), float(row["cost"])
+    context_week = int(row["week"]) + 1 if req.week is None else req.week
+    sim = simulate_price(
+        _models[req.product_id],
+        cost,
+        req.price,
+        ref_price,
+        reference_quantity=None,
+        promo=req.promo,
+        week=context_week,
+    )
     return SimulateResponse(
         product_id=sim.product_id,
         price=sim.price,
@@ -104,39 +110,49 @@ def simulate(req: SimulateRequest):
         predicted_margin_total=sim.predicted_margin_total,
         predicted_margin_pct=sim.predicted_margin_pct,
         volume_change_pct=sim.volume_change_pct,
+        predicted_reference_quantity=sim.reference_quantity,
+        decision_context_week=sim.context_week,
+        decision_context_promo=sim.context_promo,
+        volume_baseline="model_prediction_at_current_price_same_context",
     )
 
 
 @app.post("/recommend", response_model=RecommendResponse)
 def recommend(req: RecommendRequest):
-    row = _latest_row(req.product_id)
-    ref_price, ref_qty, cost = float(row["price"]), float(row["quantity_sold"]), float(row["cost"])
-
-    constraints = PricingConstraints(
-        objective=req.objective,
-        min_margin_pct=req.min_margin_pct,
-        max_volume_loss_pct=req.max_volume_loss_pct,
-        price_floor=req.price_floor,
-        price_ceiling=req.price_ceiling,
+    thread_id = str(uuid.uuid4())
+    parsed = req.model_dump(exclude={"scenario_label"})
+    result = approval_graph.start_structured(
+        thread_id,
+        parsed,
+        message=f"structured /recommend request for {req.product_id}",
     )
-    opt = optimize_price(_models[req.product_id], cost, ref_price, ref_qty, constraints)
-    if opt is None:
-        raise HTTPException(
-            status_code=422,
-            detail=f"no price in the tested range satisfies the given constraints for '{req.product_id}'",
-        )
+    recommendation = result.get("recommendation")
+    if recommendation is None:
+        raise HTTPException(status_code=422, detail=result.get("answer", "recommendation failed"))
 
+    governance_status = (
+        "pending_approval" if result["status"] == "pending_approval" else "auto_approved"
+    )
     response = RecommendResponse(
         product_id=req.product_id,
         scenario_label=req.scenario_label,
-        current_price=ref_price,
-        recommended_price=opt.recommended_price,
-        price_change_pct=(opt.recommended_price - ref_price) / ref_price,
-        predicted_margin_pct=opt.best_simulation.predicted_margin_pct,
-        predicted_volume_change_pct=opt.best_simulation.volume_change_pct,
-        feasible_candidates=opt.feasible_candidates,
-        analyst_explanation=explain_analyst(opt),
-        executive_explanation=explain_executive(opt),
+        current_price=recommendation["current_price"],
+        recommended_price=recommendation["recommended_price"],
+        price_change_pct=recommendation["price_change_pct"],
+        predicted_margin_pct=recommendation["predicted_margin_pct"],
+        predicted_volume_change_pct=recommendation["predicted_volume_change_pct"],
+        predicted_reference_quantity=recommendation["predicted_reference_quantity"],
+        decision_context_week=recommendation["decision_context_week"],
+        decision_context_promo=recommendation["decision_context_promo"],
+        volume_baseline=recommendation["volume_baseline"],
+        feasible_candidates=recommendation["feasible_candidates"],
+        analyst_explanation=recommendation["analyst_explanation"],
+        executive_explanation=recommendation["executive_explanation"],
+        policy_check=recommendation["policy_check"],
+        governance_status=governance_status,
+        requires_approval=governance_status == "pending_approval",
+        approval_reasons=result.get("reasons", result.get("approval_reasons", [])),
+        thread_id=thread_id,
     )
     log_recommendation(req.model_dump(), response.model_dump())
     return response
@@ -150,7 +166,14 @@ def recommendation_history(limit: int = 20):
 @app.post("/copilot/ask", response_model=CopilotResponse)
 def copilot_ask(req: CopilotRequest):
     result = handle_message(req.message)
-    return CopilotResponse(mode=result["mode"], intent=result["intent"], answer=result["answer"])
+    return CopilotResponse(
+        mode=result["mode"],
+        intent=result["intent"],
+        answer=result["answer"],
+        status=result.get("status"),
+        thread_id=result.get("thread_id"),
+        requires_approval=result.get("requires_approval"),
+    )
 
 
 @app.post("/governance/recommend")

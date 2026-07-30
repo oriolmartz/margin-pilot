@@ -90,6 +90,8 @@ def test_agent_recommend_with_policy_conflict_leads_with_warning():
     assert r["mode"] == "offline"
     assert r["intent"] == "recommend_price"
     assert r["answer"].startswith("\u26a0")  # policy warning must lead, not trail
+    assert r["status"] == "pending_approval"
+    assert r["thread_id"]
 
 
 def test_agent_recommend_without_conflict_has_no_warning():

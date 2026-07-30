@@ -16,13 +16,12 @@ from typing import Literal
 
 from langchain_core.tools import tool
 
-from src.constraints import PricingConstraints
 from src.elasticity import summarize
 from src.engine_state import get_state
-from src.explain import explain_analyst, explain_executive
-from src.optimize import optimize_price
 
-from .policy_rag import check_margin_policy
+from services.pricing import recommend as recommend_decision
+
+from .policy_rag import evaluate_pricing_policies
 from .sql_tool import ask_data_question as _ask_data_question
 
 
@@ -43,45 +42,23 @@ def recommend_price(
     price_floor: float | None = None,
     price_ceiling: float | None = None,
 ) -> dict:
-    """Recommend an optimal price for one product under business constraints.
+    """Recommend a governed price under business constraints.
 
-    Runs the deterministic pricing engine (demand model + grid-search
-    optimizer) -- does not guess or estimate a price itself. Returns the
-    recommended price, predicted margin/volume impact, and both an
-    analyst-level and executive-level explanation of why.
+    Runs the shared deterministic decision service. The returned structure
+    includes policy evaluation and whether human approval is required; the
+    LLM never computes or silently approves the price.
     """
-    _panel, _truth, models, _latest = get_state()
-    if product_id not in models:
-        return {"error": f"unknown product_id '{product_id}'"}
-
-    row = _latest_row(product_id)
-    ref_price, ref_qty, cost = float(row["price"]), float(row["quantity_sold"]), float(row["cost"])
-    constraints = PricingConstraints(
-        objective=objective,
-        min_margin_pct=min_margin_pct,
-        max_volume_loss_pct=max_volume_loss_pct,
-        price_floor=price_floor,
-        price_ceiling=price_ceiling,
-    )
-    opt = optimize_price(models[product_id], cost, ref_price, ref_qty, constraints)
-    if opt is None:
-        return {"error": f"no price in the tested range satisfies the given constraints for '{product_id}'"}
-
-    policy = check_margin_policy(row["category"], float(opt.best_simulation.predicted_margin_pct))
-
-    return {
-        "product_id": product_id,
-        "category": row["category"],
-        "current_price": ref_price,
-        "recommended_price": float(opt.recommended_price),
-        "price_change_pct": float((opt.recommended_price - ref_price) / ref_price),
-        "predicted_margin_pct": float(opt.best_simulation.predicted_margin_pct),
-        "predicted_volume_change_pct": float(opt.best_simulation.volume_change_pct),
-        "feasible_candidates": int(opt.feasible_candidates),
-        "analyst_explanation": explain_analyst(opt),
-        "executive_explanation": explain_executive(opt),
-        "policy_check": policy,
-    }
+    try:
+        return recommend_decision(
+            product_id=product_id,
+            objective=objective,
+            min_margin_pct=min_margin_pct,
+            max_volume_loss_pct=max_volume_loss_pct,
+            price_floor=price_floor,
+            price_ceiling=price_ceiling,
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
 
 
 @tool
@@ -101,14 +78,16 @@ def get_product_elasticity(product_id: str) -> dict:
 
 
 @tool
-def check_pricing_policy(category: str, predicted_margin_pct: float) -> dict:
-    """Check a predicted margin against the company's minimum-margin policy for a category.
-
-    Retrieves the relevant policy text and compares its numeric floor
-    against the predicted margin -- the conflict flag is a computed
-    comparison, not a paraphrase of the policy.
-    """
-    return check_margin_policy(category, predicted_margin_pct)
+def check_pricing_policy(
+    category: str,
+    current_price: float,
+    recommended_price: float,
+    predicted_margin_pct: float,
+) -> dict:
+    """Evaluate machine-readable pricing policies for a recommendation."""
+    return evaluate_pricing_policies(
+        category, current_price, recommended_price, predicted_margin_pct
+    )
 
 
 @tool

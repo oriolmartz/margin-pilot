@@ -1,25 +1,14 @@
 """
 approval_graph.py
 
-The flowchart from the original architecture doc, built as an actual
-LangGraph StateGraph instead of prose:
+Persistent LangGraph approval workflow shared by natural-language,
+structured API and copilot recommendation paths:
 
-    parse -> recommend -> check_approval -> (>10% change, or a policy
-             conflict) -> human_approval (interrupt!) -> finalize
-                       -> (else) -----------------------> finalize
+    parse/accept structured constraints -> deterministic recommendation
+    -> shared approval rules -> interrupt when required -> finalize
 
-`interrupt()` pauses the graph and persists its state via a real SQLite
-checkpointer (not the in-memory default) -- so approval can come from a
-separate request, minutes or days later, against the same thread_id, and
-survive an API process restart. `check_approval` also writes the
-audit-log row (pending, or auto_approved, or error) -- it runs exactly
-once; LangGraph only re-executes the node that's actually paused
-(`human_approval`), not the whole graph, on resume.
-
-A policy conflict routes to approval even when the price change itself
-is small -- extends the original doc's single "exceeds 10%" gate with
-the Phase 3 policy layer, since the policy files themselves say a
-below-floor recommendation "requires category-manager sign-off".
+The graph stores paused state in SQLite, so approval can arrive in another
+request or process without recomputing the recommendation.
 """
 
 from __future__ import annotations
@@ -36,8 +25,8 @@ from copilot.fallback_parser import parse as fallback_parse
 from copilot.tools import recommend_price
 
 from . import audit
+from .approval_rules import assess_approval
 
-APPROVAL_THRESHOLD_PCT = 0.10
 CHECKPOINT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "checkpoints.db"
 
 
@@ -49,12 +38,15 @@ class ApprovalState(TypedDict, total=False):
     price_change_pct: float
     requires_approval: bool
     approval_reason: str
+    approval_reasons: list[str]
     decision: dict
     final_answer: str
     error: str
 
 
 def parse_node(state: ApprovalState) -> dict:
+    if state.get("parsed"):
+        return {}
     parsed = fallback_parse(state["message"])
     if parsed.product_id is None:
         return {"error": "No encontré un product_id en el mensaje (ej. SOFT-001)."}
@@ -68,11 +60,11 @@ def recommend_node(state: ApprovalState) -> dict:
     result = recommend_price.invoke(
         {
             "product_id": p["product_id"],
-            "objective": p["objective"],
-            "min_margin_pct": p["min_margin_pct"],
-            "max_volume_loss_pct": p["max_volume_loss_pct"],
-            "price_floor": p["price_floor"],
-            "price_ceiling": p["price_ceiling"],
+            "objective": p.get("objective", "profit"),
+            "min_margin_pct": p.get("min_margin_pct"),
+            "max_volume_loss_pct": p.get("max_volume_loss_pct"),
+            "price_floor": p.get("price_floor"),
+            "price_ceiling": p.get("price_ceiling"),
         }
     )
     if "error" in result:
@@ -82,26 +74,23 @@ def recommend_node(state: ApprovalState) -> dict:
 
 def check_approval_node(state: ApprovalState) -> dict:
     if state.get("error"):
-        audit.record_error(state["thread_id"], state["message"], state["error"])
+        audit.record_error(state["thread_id"], state.get("message", ""), state["error"])
         return {"requires_approval": False}
 
     rec = state["recommendation"]
-    price_change = abs(state["price_change_pct"])
-    policy_conflict = bool((rec.get("policy_check") or {}).get("conflict"))
+    assessment = assess_approval(rec)
+    reason = assessment["approval_reason"]
 
-    if price_change > APPROVAL_THRESHOLD_PCT:
-        reason = f"price change {price_change:.1%} exceeds the {APPROVAL_THRESHOLD_PCT:.0%} auto-approval threshold"
-    elif policy_conflict:
-        reason = rec["policy_check"]["note"]
+    if assessment["requires_approval"]:
+        audit.upsert_pending(
+            state["thread_id"], state.get("message", ""), rec, state["price_change_pct"], reason
+        )
     else:
-        reason = None
+        audit.record_auto_approved(
+            state["thread_id"], state.get("message", ""), rec, state["price_change_pct"]
+        )
 
-    if reason is not None:
-        audit.upsert_pending(state["thread_id"], state["message"], rec, state["price_change_pct"], reason)
-        return {"requires_approval": True, "approval_reason": reason}
-
-    audit.record_auto_approved(state["thread_id"], state["message"], rec, state["price_change_pct"])
-    return {"requires_approval": False}
+    return assessment
 
 
 def route_after_check(state: ApprovalState) -> str:
@@ -118,6 +107,7 @@ def human_approval_node(state: ApprovalState) -> dict:
             "product_id": state["parsed"]["product_id"],
             "recommendation": state["recommendation"],
             "reason": state["approval_reason"],
+            "reasons": state.get("approval_reasons", []),
         }
     )
     return {"decision": decision}
@@ -135,7 +125,12 @@ def finalize_node(state: ApprovalState) -> dict:
         audit.record_decision(state["thread_id"], approved, approved_by)
         if approved:
             return {"final_answer": f"Aprobado por {approved_by}. {rec['executive_explanation']}"}
-        return {"final_answer": f"Recomendación rechazada por {approved_by}. Motivo original: {state['approval_reason']}"}
+        return {
+            "final_answer": (
+                f"Recomendación rechazada por {approved_by}. "
+                f"Motivo original: {state['approval_reason']}"
+            )
+        }
 
     return {"final_answer": rec["executive_explanation"]}
 
@@ -152,7 +147,9 @@ def build_graph():
     builder.add_edge("parse", "recommend")
     builder.add_edge("recommend", "check_approval")
     builder.add_conditional_edges(
-        "check_approval", route_after_check, {"human_approval": "human_approval", "finalize": "finalize"}
+        "check_approval",
+        route_after_check,
+        {"human_approval": "human_approval", "finalize": "finalize"},
     )
     builder.add_edge("human_approval", "finalize")
     builder.add_edge("finalize", END)
@@ -179,10 +176,24 @@ def start(thread_id: str, message: str) -> dict:
     return _to_response(result)
 
 
+def start_structured(thread_id: str, parsed: dict, message: str = "structured recommendation") -> dict:
+    """Start the same graph from already-validated structured constraints."""
+    graph = get_graph()
+    config = {"configurable": {"thread_id": thread_id}}
+    result = graph.invoke(
+        {"thread_id": thread_id, "message": message, "parsed": parsed},
+        config,
+    )
+    return _to_response(result)
+
+
 def resume(thread_id: str, approved: bool, approved_by: str) -> dict:
     graph = get_graph()
     config = {"configurable": {"thread_id": thread_id}}
-    result = graph.invoke(Command(resume={"approved": approved, "approved_by": approved_by}), config)
+    result = graph.invoke(
+        Command(resume={"approved": approved, "approved_by": approved_by}),
+        config,
+    )
     return _to_response(result)
 
 
@@ -190,4 +201,10 @@ def _to_response(result: dict) -> dict:
     if "__interrupt__" in result:
         payload = result["__interrupt__"][0].value
         return {"status": "pending_approval", **payload}
-    return {"status": "completed", "answer": result.get("final_answer", "")}
+    return {
+        "status": "completed",
+        "answer": result.get("final_answer", ""),
+        "recommendation": result.get("recommendation"),
+        "requires_approval": bool(result.get("requires_approval", False)),
+        "approval_reasons": result.get("approval_reasons", []),
+    }
